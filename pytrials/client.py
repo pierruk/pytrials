@@ -1,4 +1,4 @@
-from pytrials.utils import json_handler, csv_handler
+from pytrials.utils import json_handler, csv_handler, xml_handler
 
 
 class ClinicalTrials:
@@ -19,6 +19,8 @@ class ClinicalTrials:
     _QUERY = "query/"
     _JSON = "fmt=json"
     _CSV = "fmt=csv"
+    _XML = "fmt=xml"
+    _CT_GOV_MAX_RECORD = 100
 
     def __init__(self):
         self.api_info = self.__api_info()
@@ -29,6 +31,7 @@ class ClinicalTrials:
             f"{self._BASE_URL}{self._INFO}study_fields_list?{self._JSON}"
         )
         return fields_list["StudyFields"]["Fields"]
+
 
     def __api_info(self):
         """Returns information about the API"""
@@ -41,7 +44,23 @@ class ClinicalTrials:
 
         return api_version, last_updated
 
-    def get_full_studies(self, search_expr, max_studies=None):
+
+
+    def __merge_xml_full_studies(self, xml_list):
+        ct_stream_data = xml_list[0]
+        for i in range(1,len(xml_list)):
+            for ct_study in xml_list[i].findall('.//FullStudy'):
+                # todo - 1 step too many
+                # ct_stream_data_last_study_nctid = ct_stream_data.xpath("//Field[@Name='NCTId']")[-1].text
+                # ct_stream_data_last_study = ct_stream_data.xpath(f"//FullStudy[.//Field[@Name='NCTId'][text()='{ct_stream_data_last_study_nctid}']]")[0]
+                ct_stream_data_last_study = ct_stream_data.xpath("//FullStudy")[-1]
+            
+                ct_stream_data_last_study.addnext(ct_study)
+        return ct_stream_data
+
+
+
+    def get_full_studies(self, search_expr, max_studies=None, fmt="json"):
         """Returns all content for a maximum of `max_studies` study records.
 
         Retrieves information from the full studies endpoint, which gets all study fields.
@@ -53,6 +72,7 @@ class ClinicalTrials:
                 `their documentation <https://clinicaltrials.gov/api/gui/ref/syntax#searchExpr>`_.
             max_studies (int; optional): An integer indicating the maximum number of studies to return.
                 Defaults to None, resulting in all studies being returned.
+            fmt (str; optional): A string indicating the output format, json or xml. Defaults to json.
 
         Returns:
             list: List of responses containing the information queried with the search expression.
@@ -64,20 +84,26 @@ class ClinicalTrials:
             raise ValueError("The number of studies must be at least 1")
 
         min_rnk = 1
-        max_rnk = 100 if max_studies is None else min(100, max_studies)
+        max_rnk = self._CT_GOV_MAX_RECORD if max_studies is None else min(self._CT_GOV_MAX_RECORD, max_studies)
         req = "full_studies?expr={}&min_rnk={}&max_rnk={}&{}"
 
         full_studies = list()
 
-        reqf = req.format(search_expr, min_rnk, max_rnk, self._JSON)
-        full_studies.append(json_handler(f"{self._BASE_URL}{self._QUERY}{reqf}"))
-
-        if max_studies is None or max_studies > 100:
-
-            n_studies_found = full_studies[0]["FullStudiesResponse"]["NStudiesFound"]
-
-            min_rnk += 100
-            max_rnk += 100
+        match fmt:
+            case 'xml':
+                reqf = req.format(search_expr, min_rnk, max_rnk, self._XML)
+                full_studies.append(xml_handler(f"{self._BASE_URL}{self._QUERY}{reqf}"))
+                n_studies_found = int(full_studies[0].xpath("//FullStudiesResponse/NStudiesFound")[0].text)
+            case 'json':
+                reqf = req.format(search_expr, min_rnk, max_rnk, self._JSON)
+                full_studies.append(json_handler(f"{self._BASE_URL}{self._QUERY}{reqf}"))
+                n_studies_found = int(full_studies[0]["FullStudiesResponse"]["NStudiesFound"])
+            case _:
+                raise ValueError("Format argument has to be either 'xml' or 'json'")            
+        
+        if max_studies is None or max_studies > self._CT_GOV_MAX_RECORD:
+            min_rnk += self._CT_GOV_MAX_RECORD
+            max_rnk += self._CT_GOV_MAX_RECORD
 
             while_stop = (
                 n_studies_found
@@ -86,18 +112,29 @@ class ClinicalTrials:
             )
             max_rnk = min(n_studies_found, max_rnk, while_stop)
 
-            print(while_stop)
+            # print(while_stop)
             while min_rnk <= while_stop:
-                print(max_rnk)
-                reqf = req.format(search_expr, min_rnk, max_rnk, self._JSON)
-                full_studies.append(
-                    json_handler(f"{self._BASE_URL}{self._QUERY}{reqf}")
-                )
-                min_rnk += 100
-                max_rnk += 100
+                # print(max_rnk)
+                if fmt == "xml":
+                    reqf = req.format(search_expr, min_rnk, max_rnk, self._XML)
+                    full_studies.append(
+                        xml_handler(f"{self._BASE_URL}{self._QUERY}{reqf}")
+                    )
+                else:
+                    reqf = req.format(search_expr, min_rnk, max_rnk, self._JSON)
+                    full_studies.append(
+                        json_handler(f"{self._BASE_URL}{self._QUERY}{reqf}")
+                    )                    
+                min_rnk += self._CT_GOV_MAX_RECORD
+                max_rnk += self._CT_GOV_MAX_RECORD
                 max_rnk = min(while_stop, max_rnk)
 
+        if (fmt == "xml"):
+            full_studies = self.__merge_xml_full_studies( full_studies )
+
         return full_studies
+
+
 
     def get_study_fields(self, search_expr, fields, max_studies=50, fmt="csv"):
         """Returns study content for specified fields
@@ -144,6 +181,7 @@ class ClinicalTrials:
             else:
                 raise ValueError("Format argument has to be either 'csv' or 'json'")
 
+
     def get_study_count(self, search_expr):
         """Returns study count for specified search expression
 
@@ -167,6 +205,7 @@ class ClinicalTrials:
             returned_data = json_handler(url)
             study_count = returned_data["StudyFieldsResponse"]["NStudiesFound"]
             return study_count
+
 
     def __repr__(self):
         return f"ClinicalTrials.gov client v{self.api_info[0]}, database last updated {self.api_info[1]}"

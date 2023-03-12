@@ -2,6 +2,8 @@
 import requests
 import csv
 import re
+from html import unescape
+import lxml.etree as ET
 
 
 def request_ct(url):
@@ -32,3 +34,11 @@ def csv_handler(url):
     records = list(cr)
 
     return records
+
+
+def xml_handler(url):
+    """Returns requests in XML (lxml) format"""
+    response = request_ct(url)
+    ct_data = ET.fromstring(response.text)
+
+    return ct_data
